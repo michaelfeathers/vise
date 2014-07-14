@@ -1,0 +1,116 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd">
+<HTML>
+<HEAD>
+<TITLE>Vise</TITLE>
+</HEAD>
+
+<BODY>
+
+<h1>Vise - A Testing Tool Which Aids Refactoring</h1>
+
+
+<p>Michael Feathers - mfeathers@objectmentor.com</p>
+<p>Last week, I was working with a team, helping them get some code under test, and I showed them how to use a technique that I call ‘using sensing variables.’  It’s a very simple technique that I wrote up in my book but it’s not very well known.  I was thinking that I should write up some web-based article to provide more exposure for it; however, after my experience last week, I realized that I could create a set of classes which make the technique easier, so I ended writing Vise.</p>
+
+<p>So, what is Vise?  Well, the best way to explain it is to give an example of its use.  Suppose that you have a rather large method and you’d like to refactor it, but you don’t have any tests for it.  If you are using a Java IDE that has built in refactoring capability, you can make progress.  Unfortunately, you’re pretty much tied to what the tool supports.  Sometimes, the chunk of code you’d like to extract isn’t ideal for a method extraction; it might have unrelated statements embedded within it, for instance.  You may know that you can extract some meaningful chunks of code from that method, but only if you can be sure that some state inside the method doesn’t change.  Vise can help you with this.</p>
+
+<p>Let’s suppose that this is the method that we have:</p>
+
+<pre>
+void process(int id, long location) {
+    int value;
+    Dispatcher dispatcher = new Dispatcher(location);
+    …
+
+    String baseMessage = “@” + getLastMessage();
+    dispatcher.send(artLevel, 3);
+    baseMessage += getMaxRate() + “ “ + value + “.optkey”;
+    …
+}
+</pre>
+
+<p>We know that we’d like to take all of that work we do to calculate our baseMessage and move it into another method, but there are some things in the code that get in the way; the call to send() on dispatcher, for instance.  We don’t think send() should affect the calculation of baseMessage, but it would be better to be safe than sorry.</p>
+
+<p>Here’s how we approach the problem with Vise.  We use Vise to put a “grip” on a value in the method.  When we “grip” a value, Vise records its value, at that point, the first time the test is executed, and then checks the value each subsequent time that we run the test.  If the value changes in any of the subsequent executions, the test fails.</p>
+
+<p>We can “grip” a value using the grip method of the Vise class:</p>
+
+<pre>
+void process(int id, long location) {
+    int value;
+    Dispatcher dispatcher = new Dispatcher(location);
+    …
+
+    String baseMessage = “@” + getLastMessage();
+    dispatcher.send(artLevel, 3);
+    baseMessage += getMaxRate() + “ “ + value + “.optkey”;
+
+    Vise.grip(baseMessage);
+    …
+}
+</pre>
+
+<p>To make the vise work, we have to run the method in a test.  It actually would be good to write several tests, so that we can exercise the method in various ways.</p>
+
+<pre>
+void testProcessLocal() {
+    final int ID = 12;
+    DispatchCommand command = new DispatchCommand();
+    command.process(ID, LOCAL_LOCATION);
+}
+
+void testProcessRemote() {
+    final int ID = 12;
+    DispatchCommand command = new DispatchCommand();
+    command.process(ID, REMOTE_LOCATION);
+}
+</pre>
+
+<p>Notice that there are no assertions in these tests; Vise handles that.  Here’s what happens.  When we run a test method in JUnit and it calls code that contains embedded calls to Vise.grip(), Vise checks to see if there have been any values saved for that test method.  If there haven’t been any, Vise works in “record mode”; it saves all of the values that are given to its grip calls, in order, and places them in a file.  The next time that the test method executes, Vise recognizes that a file has been saved for that method, and it enters “test mode”; for every grip call that it encounters, it takes the input value and compares it against the next value in the file.  If it matches, all is well.  If it doesn’t, Vise throws an exception that will be caught by JUnit.</p>
+
+<p>That’s it.</p>
+
+<p>Once you have Vise calls in your code and run it from a test method once, you can refactor it anyway you want to.  If any of the values you send to grip are different, or there are more calls or fewer calls, you’ll get an exception.  When you are done refactoring, you can just remove the Vise calls from your production code.</p>
+
+<p>Let’s go back and do that refactoring we wanted to do.  We have a grip on the value of baseMessage at a particular moment in time:</p>
+
+<pre>
+void process(int id, long location) {
+    int value;
+    Dispatcher dispatcher = new Dispatcher(location);
+    …
+    String baseMessage = “@” + getLastMessage();
+    dispatcher.send(artLevel, 3);
+    baseMessage += getMaxRate() + “ “ + value + “.optkey”;
+
+    Vise.grip(baseMessage);
+    …
+}
+</pre>
+
+<p>Once we’ve run that code once from a test we’ve recorded the value of baseMessage. Now, we can attempt to manipulate the code a little to get all of the baseMessage calculations by themselves.  Let’s move the send call on dispatcher up above the initialization of baseMessage:</p>
+
+<pre>
+void process(int id, long location) {
+    int value;
+    Dispatcher dispatcher = new Dispatcher(location);
+    …
+
+    dispatcher.send(artLevel, 3);
+    String baseMessage = “@” + getLastMessage();
+    baseMessage += getMaxRate() + “ “ + value + “.optkey”;
+
+    Vise.grip(baseMessage);
+    …
+}
+</pre>
+
+<p>Now, we run our tests again.  Ooops.  When we do, we discover that we get an exception from that call to Vise.grip() in one of our tests.  It turns out that the call to send() on the dispatcher ends up producing a side effect which affects the value returned by getLastMessage().  We’ll have to do a bit more work if we want to move that statement above the declaration of the baseMessage string.  Fortunately, the vise will hold our code down while we do that work.</p>
+
+<p>Vise itself is new, but the technique that it automates, using sensing variables to tease apart code, has been around for a while.  I haven’t used Vise in anger yet, but I think that it might provide some advantages not only in crusty legacy code but also in run-of-the-mill refactoring.  It’s great to write tests for code you are about to refactor, but it’s hard to get at values we’d like to test against, particularly in very long methods.  While the automated extract method capability of many tools is getting better, it’s not perfect.  Vise can help you get some feedback if you have to augment those refactorings with manual steps.  None of this is magic.  You still have decide where to place your Vise calls, but it is interesting to consider: how many Vise calls would you put in place if were trying to gain control of some of your code?  A few?  Many?</p>
+
+<p>At this point, I’m releasing it as an alpha and hoping that people will try it out along with me and provide feedback.  I’m also working on a version for C++, a language which really needs this sort of tool a bit more.  I’ll release that in a day or two.</p>
+
+<p>My hope is that IDE vendors eventually take up this idea and just sort of build it in.  Wouldn't it be nice if we could checkpoint behavior when we refactor by simply by choosing some locations in the source and tying them to a set of tests?  I think it would be pretty  handy.</p>
+</BODY>
+</HTML>
